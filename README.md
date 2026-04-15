@@ -1,24 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+PrepSense is a simple PM interview prep web app built with Next.js + Tailwind CSS. Paste a job description, generate tailored interview questions, write answers, and score them on STAR structure, metrics, and relevance.
 
 ## Getting Started
 
-First, run the development server:
+### 1) Configure env
+
+Create `.env.local`:
+
+```bash
+cp .env.example .env.local
+```
+
+Then set:
+
+```bash
+ANTHROPIC_API_KEY=...
+```
+
+### 2) Run the dev server
+
+Run:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### How it works
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `POST /api/analyse`: Calls Claude (model `claude-sonnet-4-20250514`) twice in sequence:
+  - Step 1 extracts PM signals from the JD
+  - Step 2 generates 8 tailored questions
+- `POST /api/score`: Scores your answers (STAR, metrics, relevance) and returns feedback per question
+
+### Notes
+
+- The API key is only read server-side via `ANTHROPIC_API_KEY`.
 
 ## Learn More
 

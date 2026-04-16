@@ -1,3 +1,18 @@
+export function cleanJSON(response: string): string {
+  const trimmed = response.trim();
+  // Common case: the entire response is wrapped in a JSON code fence.
+  const fullFence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fullFence?.[1]) return fullFence[1].trim();
+
+  // Fallback: strip any backtick fences that might be present anywhere.
+  return trimmed
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```$/i, "")
+    .replace(/```(?:json)?/gi, "")
+    .replace(/```/g, "")
+    .trim();
+}
+
 function cleanJsonCandidate(input: string): string {
   return input
     .replace(/^\uFEFF/, "")
@@ -8,7 +23,7 @@ function cleanJsonCandidate(input: string): string {
 }
 
 function getCandidates(text: string): string[] {
-  const trimmed = text.trim();
+  const trimmed = cleanJSON(text);
   const out: string[] = [trimmed];
 
   const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);

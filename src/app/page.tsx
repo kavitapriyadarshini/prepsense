@@ -1,16 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { jsPDF } from "jspdf";
 
 type Signals = {
-  pm_signals: Array<{
-    skill: string;
-    evidence_from_jd: string;
-    why_it_matters: string;
-  }>;
+  role_title: string;
+  company_name: string;
+  signals: Array<{ signal: string; coaching_tip: string }>;
   competencies: string[];
-  seniority_guess: "Intern" | "Junior" | "Mid" | "Senior" | "Lead" | "Unknown";
-  notes: string;
 };
 
 type QuestionsPayload = {
@@ -36,6 +33,7 @@ export default function Home() {
   const [step, setStep] = useState<"input" | "generated" | "scored">("input");
   const [loading, setLoading] = useState<null | "analyse" | "score">(null);
   const [error, setError] = useState<string | null>(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   const [signals, setSignals] = useState<Signals | null>(null);
   const [questions, setQuestions] = useState<QuestionsPayload | null>(null);
@@ -49,6 +47,9 @@ export default function Home() {
 
   async function onAnalyse() {
     setError(null);
+    setSignals(null);
+    setQuestions(null);
+    setAnswers({});
     setScores({});
     setStep("input");
 
@@ -75,6 +76,20 @@ export default function Home() {
         throw new Error(json.error);
       }
 
+      console.log("PrepSense /api/analyse response:", json);
+
+      if (
+        !json.signals ||
+        !Array.isArray(json.signals.competencies) ||
+        json.signals.competencies.length === 0
+      ) {
+        throw new Error(
+          `PrepSense couldn’t extract "competencies" from the job description. Received signals: ${JSON.stringify(
+            json.signals,
+          ).slice(0, 600)}`,
+        );
+      }
+
       setSignals(json.signals);
       setQuestions(json.questions);
       setAnswers(
@@ -89,19 +104,31 @@ export default function Home() {
   }
 
   async function onScore() {
-    setError(null);
-    const jd = jobDescription.trim();
-    if (!jd) {
-      setError("Paste a job description first.");
-      return;
-    }
-    if (!questions) {
-      setError("Generate questions first.");
-      return;
-    }
+    console.log("Score answers clicked");
 
-    setLoading("score");
     try {
+      setError(null);
+      const jd = jobDescription.trim();
+      if (!jd) {
+        setError("Paste a job description first.");
+        return;
+      }
+      if (!questions) {
+        setError("Generate questions first.");
+        return;
+      }
+
+      const answerSnapshot = questions.questions.map((q) => ({
+        id: q.id,
+        answer: (answers[q.id] ?? "").slice(0, 400),
+      }));
+      console.log("Questions ids:", questions.questions.map((q) => q.id));
+      console.log("Answer snapshot (up to 400 chars):", answerSnapshot);
+      console.log("hasAnyAnswer:", hasAnyAnswer);
+      console.log("Full answers object:", answers);
+
+      setLoading("score");
+
       const res = await fetch("/api/score", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -115,9 +142,11 @@ export default function Home() {
           answers,
         }),
       });
+
       const json = (await res.json()) as
         | { results: ScoreResult[] }
         | { error: string };
+
       if (!res.ok) {
         throw new Error("error" in json ? json.error : "Request failed");
       }
@@ -133,6 +162,165 @@ export default function Home() {
     } finally {
       setLoading(null);
     }
+  }
+
+  function downloadPrepReport() {
+    if (!signals || !questions) return;
+
+    const results = questions.questions
+      .map((q) => scores[q.id])
+      .filter(Boolean) as ScoreResult[];
+
+    const avg = (vals: number[]) =>
+      vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+
+    const starAvg = avg(results.map((r) => r.star.score));
+    const metricsAvg = avg(results.map((r) => r.metrics.score));
+    const relevanceAvg = avg(results.map((r) => r.relevance.score));
+    const overallAvg = avg(results.map((r) => r.overall.score));
+    const readinessScore = Math.round((overallAvg / 10) * 100);
+
+    const focusAreas = [
+      { label: "STAR structure (Situation/Task/Action/Result)", avg: starAvg },
+      { label: "Use of metrics (impact + measurable outcomes)", avg: metricsAvg },
+      { label: "Relevance to the JD", avg: relevanceAvg },
+    ]
+      .sort((a, b) => a.avg - b.avg)
+      .slice(0, 3);
+
+    const finalTopSkills = Array.isArray(signals.signals)
+      ? signals.signals.slice(0, 3).map((s) => s.signal)
+      : [];
+
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const marginX = 42;
+    const marginTop = 40;
+    let y = marginTop;
+    const usableWidth = pageWidth - marginX * 2;
+    const lineHeight = 14;
+
+    const ensureSpace = (needed: number) => {
+      if (y + needed > pageHeight - marginTop) {
+        doc.addPage();
+        y = marginTop;
+      }
+    };
+
+    const writeParagraph = (text: string, fontSize = 10) => {
+      const lines = doc.splitTextToSize(text || "—", usableWidth);
+      doc.setFontSize(fontSize);
+      for (const line of lines) {
+        ensureSpace(lineHeight);
+        doc.text(line, marginX, y);
+        y += lineHeight;
+      }
+    };
+
+    const writeHeading = (text: string, fontSize = 14) => {
+      ensureSpace(22);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(fontSize);
+      doc.text(text, marginX, y);
+      y += 18;
+      doc.setFont("helvetica", "normal");
+    };
+
+    const writeSubheading = (text: string) => {
+      ensureSpace(18);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(text, marginX, y);
+      y += 14;
+      doc.setFont("helvetica", "normal");
+    };
+
+    const writeKeyValueLine = (key: string, value: string) => {
+      const line = `${key}: ${value || "—"}`;
+      writeParagraph(line, 10);
+    };
+
+    const writeBullets = (items: string[]) => {
+      for (const item of items) {
+        writeParagraph(`• ${item}`, 10);
+      }
+    };
+
+    writeHeading("PrepSense Interview Prep Report", 16);
+
+    writeKeyValueLine(
+      "Job title",
+      signals.role_title?.trim() ? signals.role_title.trim() : "Not detected",
+    );
+    writeKeyValueLine(
+      "Company",
+      signals.company_name?.trim()
+        ? signals.company_name.trim()
+        : "Not detected",
+    );
+
+    writeSubheading("Top skills to prepare (from the JD)");
+    writeBullets(finalTopSkills);
+
+    y += 6;
+    writeSubheading("Your answers & feedback");
+
+    questions.questions.forEach((q, idx) => {
+      const r = scores[q.id];
+
+      ensureSpace(16);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(`Q${idx + 1} — ${q.competency}`, marginX, y);
+      y += 14;
+      doc.setFont("helvetica", "normal");
+
+      writeParagraph(`Question: ${q.question}`, 10);
+      writeParagraph(`Your answer:\n${answers[q.id] ?? ""}`, 10);
+
+      if (r) {
+        y += 2;
+        writeSubheading(`Scores (out of 5 / 10)`);
+        writeParagraph(
+          `STAR: ${r.star.score}/5 — ${r.star.notes || "—"}`,
+          10,
+        );
+        writeParagraph(
+          `Metrics: ${r.metrics.score}/5 — ${r.metrics.notes || "—"}`,
+          10,
+        );
+        writeParagraph(
+          `Relevance: ${r.relevance.score}/5 — ${r.relevance.notes || "—"}`,
+          10,
+        );
+        writeParagraph(
+          `Overall: ${r.overall.score}/10 — ${r.overall.one_liner || "—"}`,
+          10,
+        );
+
+        const improved = (r.improved_answer_bullets ?? []).slice(0, 5);
+        if (improved.length) {
+          y += 2;
+          writeSubheading("Focus improvements");
+          writeBullets(improved);
+        }
+      } else {
+        writeParagraph("No score available for this question.", 10);
+      }
+
+      y += 10;
+    });
+
+    writeSubheading(`Overall readiness score: ${readinessScore}/100`);
+
+    y += 2;
+    writeSubheading("Focus Areas (weakest criteria)");
+    writeBullets(
+      focusAreas.map((a) => `${a.label} — avg ${a.avg.toFixed(1)}/5`),
+    );
+
+    doc.save("PrepSense-Prep-Report.pdf");
   }
 
   return (
@@ -187,36 +375,40 @@ export default function Home() {
           <section className="mt-6 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-6">
             <h2 className="text-base font-semibold">2) What they’re testing</h2>
             <div className="mt-3 flex flex-wrap gap-2">
-              {signals.competencies.slice(0, 12).map((c) => (
-                <span
-                  key={c}
-                  className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-700"
-                >
-                  {c}
-                </span>
-              ))}
+              {Array.isArray(signals.competencies) &&
+              signals.competencies.length ? (
+                signals.competencies.slice(0, 12).map((c) => (
+                  <span
+                    key={c}
+                    className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-700"
+                  >
+                    {c}
+                  </span>
+                ))
+              ) : (
+                <div className="text-sm text-zinc-600">
+                  We couldn’t extract the `competencies` from the JD response.
+                </div>
+              )}
             </div>
             <div className="mt-4 grid gap-3">
-              {signals.pm_signals.slice(0, 8).map((s) => (
-                <div
-                  key={`${s.skill}-${s.evidence_from_jd}`}
-                  className="rounded-xl border border-zinc-200 bg-white p-3"
-                >
-                  <div className="text-sm font-semibold">{s.skill}</div>
-                  <div className="mt-1 text-xs text-zinc-600">
-                    <span className="font-medium text-zinc-700">Evidence:</span>{" "}
-                    {s.evidence_from_jd}
+              {Array.isArray(signals.signals) && signals.signals.length ? (
+                signals.signals.slice(0, 8).map((s) => (
+                  <div
+                    key={s.signal}
+                    className="rounded-xl border border-zinc-200 bg-white p-3"
+                  >
+                    <div className="text-sm font-semibold">{s.signal}</div>
+                    <div className="mt-1 text-xs text-zinc-600">
+                      {s.coaching_tip}
+                    </div>
                   </div>
-                  <div className="mt-1 text-xs text-zinc-600">
-                    <span className="font-medium text-zinc-700">Why:</span>{" "}
-                    {s.why_it_matters}
-                  </div>
+                ))
+              ) : (
+                <div className="text-sm text-zinc-600">
+                  We couldn’t extract the skill signals from the JD response.
                 </div>
-              ))}
-            </div>
-            <div className="mt-4 text-xs text-zinc-600">
-              <span className="font-medium text-zinc-700">Seniority:</span>{" "}
-              {signals.seniority_guess} · {signals.notes}
+              )}
             </div>
           </section>
         ) : null}
@@ -232,12 +424,18 @@ export default function Home() {
               </div>
               <button
                 onClick={onScore}
-                disabled={loading === "score" || !hasAnyAnswer}
+                disabled={loading === "score"}
                 className="inline-flex shrink-0 items-center justify-center rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {loading === "score" ? "Scoring…" : "Score answers"}
               </button>
             </div>
+
+            {error ? (
+              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                {error}
+              </div>
+            ) : null}
 
             <div className="mt-4 grid gap-4">
               {questions.questions.map((q, idx) => {
@@ -317,8 +515,27 @@ export default function Home() {
             </div>
 
             {step === "scored" ? (
-              <div className="mt-4 text-xs text-zinc-500">
-                Tip: rewrite one answer using the bullets above, then score again.
+              <div className="mt-6">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPdfLoading(true);
+                      try {
+                        downloadPrepReport();
+                      } finally {
+                        setPdfLoading(false);
+                      }
+                    }}
+                    disabled={pdfLoading}
+                    className="inline-flex items-center justify-center rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {pdfLoading ? "Generating PDF…" : "Download My Prep Report"}
+                  </button>
+                </div>
+                <div className="mt-4 text-xs text-zinc-500">
+                  Tip: rewrite one answer using the bullets above, then score again.
+                </div>
               </div>
             ) : null}
           </section>
